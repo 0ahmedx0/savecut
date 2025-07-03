@@ -3,6 +3,7 @@ import os
 import logging
 import json
 from .. import bot as Safe_repo
+from .. import defaultbot
 from .. import Bot
 from telethon import events, Button, errors
 from pyrogram.errors import FloodWait
@@ -14,7 +15,7 @@ import asyncio
 import pymongo
 from telethon.tl.types import DocumentAttributeVideo
 from pyrogram import Client 
-from config import DEFAULT_SESSION as default_session, API_ID, API_HASH
+from config import API_ID, API_HASH
 
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -63,26 +64,13 @@ async def _batch(event):
         try:
             userbot = Client(":userbot:", api_id=API_ID, api_hash=API_HASH, session_string=session_data)
             await userbot.start()
-        except Exception:
-            await event.reply("Login in bot to continue. Send /login.")
-            return
+        except Exception as e:
+            await event.respond("Your session might be expired /logout and again do /login or simply logout and send link...")
     else:
-        # If user session is not available, fall back to default session
-        if default_session:
-            try:
-                userbot = Client(":userbot:", api_id=API_ID, api_hash=API_HASH, session_string=default_session)
-                await userbot.start()
-            except Exception:
-                await event.reply("Default bot session is not working. Please log in using /login.")
-                return
-        else:
-            await event.reply("Login in bot to continue or for session-based send /settings.")
-            return
+      userbot = defaultbot
 
-    # Proceed with batch command processing
-    if str(user_id) in batch_data:
-        await event.reply("You've already started one batch. Please wait for it to complete!")
-        return
+    if user_id in batch_data:
+        return await event.reply("You've already started one batch, wait for it to complete!")
 
     async with Safe_repo.conversation(event.chat_id) as conv: 
         try:
