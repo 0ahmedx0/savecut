@@ -6,7 +6,6 @@ import pymongo
 from pyrogram.enums import ParseMode , MessageMediaType
 from .. import bot as Safe_repo
 from .. import Bot
-from .. import sex as gf
 from Safe_repo.assets.progress import progress_for_pyrogram
 from Safe_repo.assets.functions import screenshot
 from pyrogram import Client
@@ -335,7 +334,7 @@ async def get_msg(userbot, client, sender, edit_id, msg_link, i, file_n):
             if msg.empty is not None:
                 await client.delete_messages(chat_id=sender, message_ids=edit_id)
                 return None            
-            if msg.media and msg.media == MessageMediaType.WEB_PAGE_PREVIEW:
+            if msg.media and msg.media == MessageMediaType.WEB_PAGE:
                 a = b = True
                 edit = await client.edit_message_text(sender, edit_id, "Cloning.")
                 if '--'  in msg.text.html or '**' in msg.text.html or '__' in msg.text.html or '~~' in msg.text.html or '||' in msg.text.html or '```' in msg.text.html or '`' in msg.text.html:
@@ -446,7 +445,7 @@ async def get_msg(userbot, client, sender, edit_id, msg_link, i, file_n):
                 target_chat_id = user_chat_ids.get(sender, sender)
                 await upm.edit("Uploading photo...")
                 await Safe_repo.send_file(target_chat_id, path, caption=caption)
-                await Safe_repo.send_file(LOG_GROUP, path, caption=caption)
+                #await Safe_repo.send_file(LOG_GROUP, path, caption=caption)
             else:
                 if file_n != '':
                     if '.' in file_n:
@@ -626,7 +625,7 @@ sessions = {}
 
 MESS = "Customize by your end and Configure your settings ..."
 
-@gf.on(events.NewMessage(incoming=True, pattern='/settings'))
+@Safe_repo.on(events.NewMessage(incoming=True, pattern='/settings'))
 async def settings_command(event):
     buttons = [
         [Button.inline("Set Chat ID", b'setchat'), Button.inline("Set Rename Tag", b'setrename')],
@@ -637,7 +636,7 @@ async def settings_command(event):
         [Button.url("Report Errors", "https://t.me/Safe_repo")]
     ]
     
-    await gf.send_message(
+    await Safe_repo.send_message(
         event.chat_id,
         message=MESS,
         buttons=buttons
@@ -645,7 +644,7 @@ async def settings_command(event):
 
 pending_photos = {}
 
-@gf.on(events.CallbackQuery)
+@Safe_repo.on(events.CallbackQuery)
 async def callback_query_handler(event):
     user_id = event.sender_id
 
@@ -692,7 +691,7 @@ async def callback_query_handler(event):
             await event.respond("No thumbnail found to remove.")
 
 
-@gf.on(events.NewMessage(func=lambda e: e.sender_id in pending_photos))
+@Safe_repo.on(events.NewMessage(func=lambda e: e.sender_id in pending_photos))
 async def save_thumbnail(event):
     user_id = event.sender_id  # Use event.sender_id as user_id
 
@@ -710,7 +709,7 @@ async def save_thumbnail(event):
     pending_photos.pop(user_id, None)
 
 
-@gf.on(events.NewMessage)
+@Safe_repo.on(events.NewMessage)
 async def handle_user_input(event):
     user_id = event.sender_id
     if user_id in sessions:

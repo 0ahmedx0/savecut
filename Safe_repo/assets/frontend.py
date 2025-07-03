@@ -5,7 +5,7 @@ import os
 import logging
 import json
 from .. import bot as Safe_repo
-from .. import Bot
+from .. import Bot 
 from config import FORCESUB as fs
 from telethon import events, Button, errors
 from pyrogram.errors import FloodWait
@@ -17,7 +17,7 @@ import asyncio
 import pymongo
 from telethon.tl.types import DocumentAttributeVideo
 from pyrogram import Client 
-from config import DEFAULT_SESSION as default_session, API_ID, API_HASH
+from config import API_ID, API_HASH
 
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -55,7 +55,7 @@ async def clone(event):
     li = lit.split("\n")
 
     if len(li) > 10:
-        await event.respond("max 10 links per message")
+        await event.respond("Max 10 links allowed")
         return
 
     for li in li:
@@ -94,26 +94,11 @@ async def clone(event):
                 return
 
             if 't.me/+' in link:
-                if default_session:
-                    try:
-                        userbot = Client(":userbot:", api_id=API_ID, api_hash=API_HASH, session_string=default_session)
-                        await userbot.start()
-                        q = await join(userbot, link)
-                        await edit.edit(q)
-                        ind = user.index(f'{int(event.sender_id)}')
-                        user.pop(ind)
-                        return
-                    except Exception:
-                        await edit.delete()
-                        await event.respond("Default bot session is not working. Please log in using /login.")
-                        ind = user.index(f'{int(event.sender_id)}')
-                        user.pop(ind)
-                        return
-                else:
-                    await event.respond("Login in bot to continue. Send /login.")
-                    ind = user.index(f'{int(event.sender_id)}')
-                    user.pop(ind)
-                    return
+                q = await join(userbot, link)
+                await edit.edit(q)
+                ind = user.index(f'{int(event.sender_id)}')
+                user.pop(int(ind))
+                return
 
             if 't.me/' in link:
                 msg_id = 0
@@ -130,8 +115,7 @@ async def clone(event):
                 session_data = get_session(user_id)
                 if session_data:
                     try:
-                        device = "Telegram Android 10.11.1"
-                        userbot = Client(":userbot:", device_model=device, api_id=API_ID, api_hash=API_HASH, session_string=session_data, workers=15, max_concurrent_transmissions=5)
+                        userbot = Client(":userbot:", api_id=API_ID, api_hash=API_HASH, session_string=session_data)
                         await userbot.start()
                     except Exception as e:
                         await edit.delete()
@@ -140,19 +124,9 @@ async def clone(event):
                         user.pop(int(ind))
                         return
                 else:
-                  if default_session:
-                    try:
-                      userbot = Client(":userbot:", api_id=API_ID, api_hash=API_HASH, session_string=default_session)
-                      await userbot.start()
-                    except Exception:
-                      await event.respond("Default bot session is not working. Please log in using /login.")
-                      ind = user.index(f'{int(event.sender_id)}')
-                      user.pop(ind)
-                      return
-                  else:
-                    await event.respond("Login in bot to continue or send /settings for session-based login.")
+                    await event.respond("Login in the bot to use send /login")
                     ind = user.index(f'{int(event.sender_id)}')
-                    user.pop(ind)
+                    user.pop(int(ind))
                     return
                   
                 await get_msg(userbot, Bot, event.sender_id, edit.id, link, m, file_name)
