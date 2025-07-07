@@ -1,5 +1,3 @@
---- START OF FILE get_func (1).py ---
-
 
 #safe_repo
 
