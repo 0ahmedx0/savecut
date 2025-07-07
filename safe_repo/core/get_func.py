@@ -1,6 +1,5 @@
 
 #safe_repo
-
 import asyncio
 import time
 import os
@@ -1058,156 +1057,250 @@ async def callback_query_handler(event):
             await event.respond("An internal error occurred (missing video data). Please try again.")
 
 
-# Handler for when user replies with a number for splitting > 10
 @gf.on(events.NewMessage(func=lambda e: e.sender_id in pending_split_reply and e.reply_to_msg_id is not None))
 async def handle_split_reply(event):
     user_id = event.sender_id
+    # Store the user's message ID for potential deletion
+    user_msg_id = event.id
 
-    # Retrieve the replied message to check if it was the bot's split prompt
-    # Using try-except in case the replied message is gone
+    replied_message = None
+    bot_prompt_msg_id = None
+    progress_msg_id = None
+    
+    file_path = None # Initialize to None for cleanup check
+    original_thumb_path = None # Initialize for cleanup check
+    temp_dir = None # Initialize for cleanup check
+
+
     try:
-        replied_message = await event.get_reply_message()
-        # Check if the replied message is likely the bot's prompt for splitting
-        # You might need a more robust check (e.g., store the bot's prompt message ID)
-        if replied_message and "اكتب العدد المطلوب" in replied_message.text:
-            # This is the expected reply
+        # --- 1. Check if the reply is to the correct bot prompt ---
+        try:
+            replied_message = await event.get_reply_message()
+        except Exception as get_reply_err:
+            # Error fetching replied message itself (rare but possible)
+            print(f"Error getting reply message for user {user_id}: {get_reply_err}")
+            # Keep user in pending state for now, inform them
+            await event.reply("An error occurred while checking your reply. Please try again.")
+            # Do NOT pop from pending_split_reply, let them retry
+            return
+
+        # Check if the fetched replied message exists and contains the expected text
+        if not replied_message or (hasattr(replied_message, 'text') and "اكتب العدد المطلوب" not in replied_message.text):
+            # If user replied but not to the split prompt
+            if user_id in pending_split_reply:
+                 # They are in the state, but replied to the wrong message
+                 await event.reply("Please reply *directly* to my message asking for the number of parts.")
+                 # Keep them in pending_split_reply state
+            # else: They replied to something else, ignore silently (event won't trigger anyway due to pending_split_reply check)
+            return # Exit if not the correct reply
+
+        # If we reach here, it's a valid reply to the splitting prompt
+        bot_prompt_msg_id = replied_message.id # Store the ID of the bot's prompt message
+
+        # --- 2. Parse the number of parts ---
+        num_parts = 0 # Initialize num_parts
+        try:
+            num_parts_str = event.text.strip()
+            # Check if input is purely numeric
+            if not num_parts_str.isdigit():
+                 # Raise ValueError if not a digit string, it will be caught below
+                 raise ValueError("Input must be a positive integer.") 
+
+            num_parts = int(num_parts_str)
+
+            if num_parts <= 0:
+                # Handle non-positive numbers - inform user and wait for valid input
+                await event.reply("Please enter a *positive* number of parts.")
+                # Keep user in pending_split_reply state
+                return # Exit this handler call, waiting for next message
+
+
+        except ValueError as ve:
+            # Handles cases where input was not a valid integer string (non-digit, empty, etc.)
+             print(f"Invalid split number input from user {user_id}: {event.text} - {ve}") # Log invalid input
+             await event.reply("Invalid input. Please reply with a positive number (e.g., 20, 30).")
+             # Keep user in pending_split_reply state
+             # Attempt to delete just the user's invalid reply to clean chat
+             try: await app.delete_messages(sender, user_msg_id)
+             except: pass # Ignore deletion errors
+             return # Exit this handler call, waiting for next message
+
+
+        # --- 3. Process the split request (if num_parts is valid and > 0) ---
+        
+        # This block contains the core file operations and needs robust cleanup
+
+        # We are now committed to processing, pop states
+        split_data = pending_video_splits.pop(user_id, None) # Use pop(key, None) for safety
+        pending_split_reply.pop(user_id, None)
+
+        if split_data is None:
+            # This means the video task was somehow lost after the user clicked the button
+            # but before they replied with a number.
+            print(f"No pending video task found for user {user_id} after they replied with {num_parts}")
+            await event.reply("No pending video task found for splitting. Please send the video link/file again.")
+            # Clean up user's reply and bot's prompt, as the task is gone
+            try: await app.delete_messages(sender, [user_msg_id, bot_prompt_msg_id])
+            except: pass
+            return # Exit
+
+
+        # Extract data from split_data
+        file_path = split_data.get('file_path') # Use .get for safer access
+        progress_msg_id = split_data.get('edit_id') # This is the message to update progress
+        sender = split_data.get('sender', user_id) # Default sender to user_id if not in data
+        msg = split_data.get('msg')
+        caption = split_data.get('caption')
+        width = split_data.get('width', 0)
+        height = split_data.get('height', 0)
+        duration = split_data.get('duration', 0)
+        original_thumb_path = split_data.get('thumb_path') 
+        log_group = split_data.get('log_group')
+        chatx = split_data.get('chatx', user_id)
+
+
+        # Use the progress_msg_id to show status
+        if progress_msg_id is None:
+             # Should not happen if task was pending, but as a safeguard
+             # Maybe send a new status message if the original edit_id is missing
+             progress_msg = await app.send_message(sender, "Starting video splitting...")
+             progress_msg_id = progress_msg.id
+             print(f"Warning: progress_msg_id was None, sent new status message {progress_msg_id}")
+
+
+        # Check if the original video file still exists before proceeding
+        if not file_path or not os.path.exists(file_path):
+            print(f"Original video file not found for user {user_id}: {file_path}")
+            await app.edit_message_text(sender, progress_msg_id, "Error: The original video file was not found.")
+            # Clean up potential remaining thumbnail - Cleanup in finally will also attempt this
+            # Deletion attempts for messages will happen later
+            return # Exit process flow
+
+
+        # --- Core Splitting and Uploading Process ---
+        # Use a nested try-except block specifically for the splitting and uploading process
+        # Errors here mean the core task failed *after* preparation.
+        try:
+            await app.edit_message_text(sender, progress_msg_id, f"Splitting video into {num_parts} parts...")
+            
+            temp_dir = tempfile.TemporaryDirectory()  # Create temp dir - must be cleaned up
+
+            # Perform splitting - this can raise exceptions
+            await split_video_ffmpeg(file_path, num_parts, temp_dir.name) 
+            
+            await app.edit_message_text(sender, progress_msg_id, "Uploading video parts...")
+
+            # Perform uploading - this can raise exceptions
+            await upload_video_parts(app, sender, progress_msg_id, temp_dir.name, msg, caption, width, height, duration, original_thumb_path, log_group)  
+            
+            # If we reach here, the entire process was successful
+            await app.edit_message_text(sender, progress_msg_id, "Video parts uploaded successfully!")
+
+            # The finally block below will handle file cleanup.
+
+        except Exception as processing_error:
+            # Catch errors during splitting, uploading, or temporary directory creation etc.
+            print(f"An error occurred during video processing for user {user_id}: {processing_error}")
+            # Update the progress message with the error
             try:
-                num_parts = int(event.text.strip()) # استخدم strip() لإزالة المسافات البيضاء الزائدة
+                 await app.edit_message_text(sender, progress_msg_id, f"Error processing video parts: {processing_error}")
+            except Exception as edit_err:
+                 print(f"Error editing status message after processing error: {edit_err}")
+                 # If editing fails, send a new error message
+                 await app.send_message(sender, f"Error processing video parts: {processing_error}")
+            
+            # Cleanup will happen in the finally block.
+            # Message deletion will happen after the outer try/finally.
 
-                if num_parts <= 0:
-                    await event.reply("Please enter a positive number of parts.")
-                    # Keep user in pending state to reply again
-                    return
-                
-                # Check if the user actually has a pending video split task
-                if user_id not in pending_video_splits:
-                    await event.reply("No pending video task found for splitting. Please try sending the video link/file again.")
-                    pending_split_reply.pop(user_id, None) # Remove user from pending state
-                    return
+        finally:
+            # --- Final Cleanup (Guaranteed to run after processing try/except) ---
+            # Clean up original file
+            if file_path and os.path.exists(file_path): 
+                 try:
+                      os.remove(file_path)
+                      print(f"Cleaned up original file: {file_path}")
+                 except Exception as rm_orig_err:
+                      print(f"Error cleaning up original file {file_path}: {rm_orig_orig_err}")
 
-                # --- START OF MODIFICATION: استرجاع بيانات التقسيم والمدة ---
-                split_data = pending_video_splits.pop(user_id)  # Get stored data and remove from pending_video_splits
-                pending_split_reply.pop(user_id, None) # Remove user from pending_split_reply state
+            # Clean up original thumbnail (used if created before splitting)
+            # The upload_video_parts function cleans up part thumbnails, but not the original one
+            if original_thumb_path and os.path.exists(original_thumb_path):
+                 try:
+                      os.remove(original_thumb_path)
+                      print(f"Cleaned up original thumbnail: {original_thumb_path}")
+                 except Exception as rm_thumb_err:
+                      print(f"Error cleaning up original thumbnail {original_thumb_path}: {rm_thumb_err}")
 
-                file_path = split_data['file_path']
-                edit_id = split_data['edit_id']
-                sender = split_data['sender'] # This is likely the user_id
-                msg = split_data['msg']
-                caption = split_data['caption']
-                width = split_data['width']
-                height = split_data['height']
-                duration = split_data['duration'] # Get original duration
-                original_thumb_path = split_data['thumb_path'] 
-                log_group = split_data['log_group']
-                chatx = split_data['chatx']
-                # --- END OF MODIFICATION: استرجاع بيانات التقسيم والمدة ---
-
-                # Use the same edit message ID for progress updates
-                progress_msg_id = edit_id # Use the original edit_id
-
-                # Check if the original video file still exists before proceeding
-                if not os.path.exists(file_path):
-                    await app.send_message(sender, "The video file was not found. It might have been deleted or an error occurred.")
-                    # Clean up thumbnail if it exists
-                    if original_thumb_path and os.path.exists(original_thumb_path):
-                        try: os.remove(original_thumb_path)
-                        except: pass
-                    try: # Delete the user's reply and bot's prompt
-                        await app.delete_messages(sender, [event.id, replied_message.id])
-                    except Exception as del_err:
-                         print(f"Error deleting messages after file not found: {del_err}")
-                    return
-
-                await app.edit_message_text(sender, progress_msg_id, f"Splitting video into {num_parts} parts...")
-                
-                temp_dir = tempfile.TemporaryDirectory()  # Create temporary directory for parts
+            # Clean up temporary directory created by tempfile.TemporaryDirectory()
+            if temp_dir: # Check if temp_dir object was successfully created
                 try:
-                    await split_video_ffmpeg(file_path, num_parts, temp_dir.name)
-                    await app.edit_message_text(sender, progress_msg_id, "Uploading video parts...")
-                    # --- START OF MODIFICATION: تمرير original_thumb_path ---
-                    await upload_video_parts(app, sender, progress_msg_id, temp_dir.name, msg, caption, width, height, duration, original_thumb_path, log_group)  # Pass original_thumb_path
-                    # --- END OF MODIFICATION: تمرير original_thumb_path ---
-                    
-                    await app.edit_message_text(sender, progress_msg_id, "Video parts uploaded successfully!")
-                    
-                    # Clean up original messages (user reply and bot prompt)
-                    await asyncio.sleep(5) # Wait a bit before deleting
-                    try:
-                       await app.delete_messages(sender, [event.id, replied_message.id, progress_msg_id]) 
-                    except Exception as del_err:
-                         print(f"Error deleting messages after successful split/upload: {del_err}")
+                    temp_dir.cleanup()
+                    print(f"Cleaned up temporary directory: {temp_dir.name}")
+                except Exception as tmp_cleanup_err:
+                    print(f"Error cleaning up temp dir {temp_dir.name}: {tmp_cleanup_err}")
 
-                except Exception as split_err:
-                    print(f"Error splitting or uploading video parts via reply: {split_err}") # Log the error
-                    try:
-                         # Update the progress message with the error
-                         await app.edit_message_text(sender, progress_msg_id, f"Error splitting or uploading video parts: {split_err}")
-                         # Optionally, delete original messages and leave the error message
-                         await asyncio.sleep(5)
-                         try:
-                            await app.delete_messages(sender, [event.id, replied_message.id])
-                         except Exception as del_err:
-                             print(f"Error deleting messages after split error: {del_err}")
+    except KeyError as ke:
+        # This outer KeyError would catch errors accessing keys in split_data if
+        # split_data.pop(user_id) returned None (already handled above) or
+        # if there was a key error during assignment after successful pop.
+        print(f"KeyError accessing split_data for user {user_id}: {ke}")
+        await event.reply("An internal error occurred (missing required video data). Please try sending the video link/file again.")
+        # Clean up states if somehow they weren't cleaned
+        pending_video_splits.pop(user_id, None)
+        pending_split_reply.pop(user_id, None)
+        # Deletion attempt happens below.
 
-                    except Exception as edit_err:
-                         print(f"Error editing message after split error: {edit_err}")
-                         # If editing fails, maybe send a new error message
-                         await app.send_message(sender, f"Error splitting or uploading video parts: {split_err}")
-                         # Try to delete original messages
-                         await asyncio.sleep(5)
-                         try:
-                            await app.delete_messages(sender, [event.id, replied_message.id])
-                         except Exception as del_err:
-                            print(f"Error deleting messages after edit error: {del_err}")
-
-                finally:
-                    # Ensure cleanup of original file, temporary directory, and thumbnail
-                    if os.path.exists(file_path):
-                         try: os.remove(file_path)
-                         except: pass
-                    if original_thumb_path and os.path.exists(original_thumb_path):
-                         try: os.remove(original_thumb_path)
-                         except: pass
-
-                    try:
-                        temp_dir.cleanup()  # Clean up the temporary directory
-                    except Exception as tmp_cleanup_err:
-                        print(f"Error cleaning up temp dir: {tmp_cleanup_err}")
-
-
-            # If somehow pending_video_splits is empty but user is in pending_split_reply state
+    except Exception as general_error:
+        # Catch any other unexpected errors not caught by specific blocks
+        print(f"An unexpected general error occurred in handle_split_reply for user {user_id}: {general_error}")
+        # Try to send a general error message to the user
+        try:
+            # If progress_msg_id was set, update it. Otherwise, send a new message.
+            if progress_msg_id is not None:
+                 await app.edit_message_text(sender, progress_msg_id, f"An unexpected error occurred: {general_error}")
             else:
-                await event.reply("No pending video task found for splitting. Please send the video link/file again.")
-                pending_split_reply.pop(user_id, None) # Remove user from pending state
-                # Also try to delete the user's reply and the bot's prompt
-                try:
-                    await app.delete_messages(sender, [event.id, replied_message.id])
-                except Exception as del_err:
-                     print(f"Error deleting messages after no pending task: {del_err}")
-
-        except ValueError:
-            # User replied with non-numeric text
-            await event.reply("Invalid input. Please reply with a positive number for the parts.")
-            # Keep user in pending state to reply again (do not pop from pending_split_reply)
-            pass # Do nothing, wait for another reply
-
-        except KeyError:
-            # Should not happen if user_id is in pending_split_reply but not pending_video_splits
-            # This case is handled above.
-            pass # Ignore
-        except Exception as general_error:
-            print(f"An unexpected error occurred in handle_split_reply: {general_error}")
-            await event.reply(f"An unexpected error occurred: {general_error}")
-            pending_split_reply.pop(user_id, None) # Exit pending state on unexpected error
+                 await event.reply(f"An unexpected error occurred: {general_error}")
+        except Exception as msg_err:
+             print(f"Error sending/editing general error message: {msg_err}")
+        
+        # Ensure pending states are cleared on unexpected errors
+        pending_video_splits.pop(user_id, None)
+        pending_split_reply.pop(user_id, None)
+        # Cleanup of files happens in the nested finally if files were created/obtained.
+        # Message deletion attempt happens below.
 
 
-    else:
-        # If the user is in pending_split_reply state but the reply was not to the correct message
-        # Or if the user is in pending_split_reply state but sent a different message type
-        if user_id in pending_split_reply:
-            await event.reply("Please reply to the splitting prompt message with the desired number of parts (or send /cancel).")
-            # Do NOT pop from pending_split_reply, keep waiting for a valid reply
+    # --- Final Message Deletion Attempt ---
+    # This attempts to clean up the user's reply, the bot's prompt, and the bot's status message
+    # It runs after the main processing (success or most failures, except input validation failure)
+    
+    # Check if the user is still in the pending_split_reply state.
+    # If they are, it means the input was invalid, and we should NOT delete their reply or prompt.
+    # If they are NOT in the state, it means the process either succeeded or failed irreversibly,
+    # and we should attempt cleanup of messages.
+    if user_id not in pending_split_reply:
+        messages_to_delete = []
+        if user_msg_id is not None:
+             messages_to_delete.append(user_msg_id)
+        if bot_prompt_msg_id is not None:
+             messages_to_delete.append(bot_prompt_msg_id)
+        # Add the progress message ID if it was available/set during processing
+        # Ensure progress_msg_id is defined in a scope accessible here and initialized
+        # It is initialized above and set from split_data or by sending a new msg.
+        if progress_msg_id is not None:
+             messages_to_delete.append(progress_msg_id)
 
+        # Add a short delay before deleting messages for better user experience
+        await asyncio.sleep(3) 
+
+        if messages_to_delete:
+             try:
+                 await app.delete_messages(sender, messages_to_delete, revoke=True) # Use revoke=True for groups/channels if needed
+                 print(f"Cleaned up messages for user {user_id}: {messages_to_delete}")
+             except Exception as final_del_err:
+                 print(f"Error during final message cleanup for user {user_id}: {final_del_err}")
+                 pass # Ignore deletion errors, the important part was processing
+             
 @gf.on(events.NewMessage(func=lambda e: e.sender_id in pending_photos and e.reply_to_msg_id is None)) # Only process if expecting photo and not a reply
 async def save_thumbnail(event):
     user_id = event.sender_id
