@@ -23,6 +23,18 @@ from telethon import events, Button
 import re
 import tempfile
 
+def format_duration(seconds):
+    """Converts seconds into MM:SS format."""
+    try:
+        seconds = int(seconds) if seconds is not None else 0
+        if seconds < 0:
+            seconds = 0
+            
+        minutes = seconds // 60
+        remaining_seconds = seconds % 60
+        return f"{minutes}:{remaining_seconds:02d}" # تنسيق الثواني برقمين مع صفر أمامي
+    except (ValueError, TypeError):
+        return "N/A" # إذا حدث خطأ في التحويل، يعرض "N/A"
 
 def thumbnail(sender):
     return f'{sender}.jpg' if os.path.exists(f'{sender}.jpg') else None
@@ -123,14 +135,16 @@ async def upload_video_parts(app, sender, edit_id, output_dir, msg, caption, wid
             files_to_remove.append((part_path, None)) # Add only the part path to remove if using single thumb
 
             # إنشاء كائن InputMediaVideo لكل جزء
+            # إنشاء كائن InputMediaVideo لكل جزء
             media = InputMediaVideo(
                 media=part_path,
-                caption=f"{caption} \n\n **{part_file}**\n__Duration: {round(part_duration)} seconds__", # Add duration for part
+                # تستخدم part_duration التي تم الحصول عليها من metadata للجزء
+                caption=f"{caption}\n\n**{part_file}**\n__Duration: {format_duration(part_duration)}__", # هنا التعديل
                 supports_streaming=True,
                 height=part_height,
                 width=part_width,
                 duration=part_duration,
-                thumb=original_thumb_path # استخدم الصورة المصغرة الأصلية
+                thumb=original_thumb_path 
             )
             media_group.append(media)
             
@@ -377,9 +391,10 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                         [Button.inline("أكثر من 10 📝", b'split_more')]
                     ]
                     # تعديل نص الرسالة لعرض المدة الفعلية للفيديو
+                    # تعديل نص الرسالة لعرض المدة الفعلية للفيديو بصيغة دقائق:ثواني
                     await gf.send_message(
                         sender,
-                        f"💡 الفيديو أطول من دقيقتين ({round(duration)} ثانية)، اختر عدد الأجزاء للتقسيم:",
+                        f"💡 الفيديو أطول من دقيقتين ({format_duration(duration)})، اختر عدد الأجزاء للتقسيم:", # هنا التعديل
                         buttons=buttons
                     )
                     # --- END OF MODIFICATION: إضافة أزرار التقسيم للمدة ---
