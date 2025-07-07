@@ -282,8 +282,19 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                         'log_group': LOG_GROUP,
                         'chatx': chatx
                     }
-                    await app.edit_message_text(sender, edit_id, "Video is longer than 2 minutes. How many parts do you want to split it into? (Reply with a number)") # تم تعديل الرسالة لتعكس الدقيقتين
-                    return # Stop processing here, wait for user reply in handle_split_reply
+                    buttons = [
+                        [Button.inline("4 أجزاء", b'split_4'), Button.inline("5 أجزاء", b'split_5')],
+                        [Button.inline("6 أجزاء", b'split_6'), Button.inline("7 أجزاء", b'split_7')],
+                        [Button.inline("8 أجزاء", b'split_8'), Button.inline("9 أجزاء", b'split_9')],
+                        [Button.inline("10 أجزاء", b'split_10')],
+                        [Button.inline("أكثر من 10 📝", b'split_more')]
+                    ]
+                    await gf.send_message(
+                        sender,
+                        "💡 الفيديو أطول من دقيقتين، اختر عدد الأجزاء للتقسيم:",
+                        buttons=buttons
+                    )
+                    return  # لا تكمل أي شيء بعد هذا
                 else: # إذا كان في وضع الباتش، يتم رفعه كجزء واحد تلقائياً
                     await app.edit_message_text(sender, edit_id, "Video is longer than 2 minutes. Uploading as single part in batch mode...") # تم تعديل الرسالة لتعكس الدقيقتين
                     # رفع الفيديو كجزء واحد مباشرة في وضع الباتش (يمكنك تعديل هذا الجزء إذا كنت تريد سلوكاً مختلفاً)
@@ -614,7 +625,6 @@ async def settings_command(event):
 pending_photos = {}
 pending_split_reply = {} # To handle user reply for split parts
 
-
 @gf.on(events.CallbackQuery)
 async def callback_query_handler(event):
     user_id = event.sender_id
@@ -646,9 +656,9 @@ async def callback_query_handler(event):
     elif event.data == b'logout':
         result = mcollection.delete_one({"user_id": user_id})
         if result.deleted_count > 0:
-          await event.respond("Logged out and deleted session successfully.")
+            await event.respond("Logged out and deleted session successfully.")
         else:
-          await event.respond("You are not logged in")
+            await event.respond("You are not logged in")
 
     elif event.data == b'setthumb':
         pending_photos[user_id] = True
@@ -670,6 +680,43 @@ async def callback_query_handler(event):
             await event.respond('Thumbnail removed successfully!')
         except FileNotFoundError:
             await event.respond("No thumbnail found to remove.")
+
+    # ------- [قسم جديد: معالجة أزرار التقسيم] -------
+    elif event.data.startswith(b'split_'):
+        value = event.data.decode().split('_')[1]
+        if value == 'more':
+            await event.respond("📝 اكتب العدد المطلوب (أكبر من 10) كرد على هذه الرسالة.")
+            await event.delete()  # حذف رسالة الأزرار بعد اختيار "أكثر من 10"
+        else:
+            num_parts = int(value)
+            await event.delete()  # حذف رسالة الأزرار بعد الضغط
+            if user_id in pending_video_splits:
+                split_data = pending_video_splits.pop(user_id)
+                file_path = split_data['file_path']
+                edit_id = split_data['edit_id']
+                sender = split_data['sender']
+                msg = split_data['msg']
+                caption = split_data['caption']
+                width = split_data['width']
+                height = split_data['height']
+                duration = split_data['duration']
+                original_thumb_path = split_data['thumb_path']
+                log_group = split_data['log_group']
+                chatx = split_data['chatx']
+
+                import tempfile
+                await app.edit_message_text(sender, edit_id, f"Splitting video into {num_parts} parts...")
+                temp_dir = tempfile.TemporaryDirectory()
+                try:
+                    await split_video_ffmpeg(file_path, num_parts, temp_dir.name)
+                    await app.edit_message_text(sender, edit_id, "Uploading video parts...")
+                    await upload_video_parts(app, sender, edit_id, temp_dir.name, msg, caption, width, height, duration, original_thumb_path, log_group)
+                    await app.edit_message_text(sender, edit_id, "Video parts uploaded successfully!")
+                except Exception as split_err:
+                    await app.edit_message_text(sender, edit_id, f"Error splitting or uploading video parts: {split_err}")
+                finally:
+                    temp_dir.cleanup()
+                    os.remove(file_path)
 
 
 @gf.on(events.NewMessage(func=lambda e: e.sender_id in pending_photos))
