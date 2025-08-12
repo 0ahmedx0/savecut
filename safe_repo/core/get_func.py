@@ -155,7 +155,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
 
             edit = await app.edit_message_text(sender, edit_id, "Trying to Download...")
             file_path = await userbot.download_media(
-                msg, progress=progress_bar, progress_args=("**__Downloading:__**\n", edit, time.time())
+                msg, progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
             )
 
             base, ext = os.path.splitext(file_path)
@@ -180,7 +180,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                     safe_repo = await app.send_video(
                         chat_id=sender, video=file_path, caption=caption, height=height, width=width,
                         duration=duration, thumb=original_thumb_path,
-                        progress=progress_bar, progress_args=('**UPLOADING:**\n', edit, time.time())
+                        progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
                     )
                     if msg.pinned_message: await safe_repo.pin()
                     await edit.delete()
@@ -240,7 +240,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                     await edit.edit("**`Uploading file...`**")
                     safe_repo = await app.send_document(
                         chat_id=target_chat_id, document=file_path, caption=processed_caption,
-                        thumb=thumb_path, progress=progress_bar, progress_args=('**`Uploading...`**\n', edit, time.time())
+                        thumb=thumb_path, progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
                     )
 
                 if msg.pinned_message: await safe_repo.pin()
