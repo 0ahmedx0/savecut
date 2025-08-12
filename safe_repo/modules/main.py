@@ -9,6 +9,7 @@ from safe_repo.core.get_func import get_msg
 from safe_repo.core.func import *
 from safe_repo.core.mongo import db
 from pyrogram.errors import FloodWait
+from safe_repo.cleanup import * # <--- أضف هذا السطر هنا
 
 
 
