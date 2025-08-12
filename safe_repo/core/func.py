@@ -89,7 +89,7 @@ async def progress_bar(current, total, ud_type, message, start, file_name=""):
     diff = now - start
     
     # Update progress every 2 seconds or when finished
-    if round(diff % 2.00) == 0 or current == total:
+    if round(diff % 4.00) == 0 or current == total:
         percentage = current * 100 / total
         speed = current / diff
         elapsed_time = round(diff)
