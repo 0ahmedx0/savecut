@@ -153,9 +153,23 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                 await edit.delete()
                 return
 
-            edit = await app.edit_message_text(sender, edit_id, "Trying to Download...")
+            edit = await app.edit_message_text(sender, edit_id, "📥 جارٍ التحضير للتحميل...")
+            
+            # Get the filename from message
+            file_name = "file" # Default fallback
+            if getattr(msg, 'document', None):
+                file_name = msg.document.file_name
+            elif getattr(msg, 'video', None):
+                file_name = msg.video.file_name
+            elif getattr(msg, 'audio', None):
+                file_name = msg.audio.file_name
+            elif getattr(msg, 'photo', None):
+                file_name = f"photo_{msg.photo.file_unique_id}.jpg"
+
             file_path = await userbot.download_media(
-                msg, progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
+                msg,
+                progress=progress_bar,
+                progress_args=("📥 جارٍ التحميل", edit, time.time(), file_name)
             )
 
             base, ext = os.path.splitext(file_path)
@@ -168,23 +182,25 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
             new_filepath = f"{new_filename} {custom_rename_tag}{ext}"
             os.rename(file_path, new_filepath)
             file_path = new_filepath
+            
+            upload_filename = os.path.basename(file_path)
 
-            await edit.edit('Trying to Upload...')
+            await edit.edit('📤 جارٍ التحضير للرفع...')
 
             if msg.media == MessageMediaType.VIDEO and msg.video.mime_type in ["video/mp4", "video/x-matroska"]:
                 metadata = video_metadata(file_path)
                 width, height, duration = metadata['width'], metadata['height'], metadata['duration']
-                original_thumb_path = await screenshot(file_path, duration / 2, chatx) # Thumb from middle
+                original_thumb_path = await screenshot(file_path, duration / 2, chatx)
 
                 if duration <= 120:
                     safe_repo = await app.send_video(
                         chat_id=sender, video=file_path, caption=caption, height=height, width=width,
                         duration=duration, thumb=original_thumb_path,
-                        progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
+                        progress=progress_bar, progress_args=('📤 جارٍ الرفع', edit, time.time(), upload_filename)
                     )
                     if msg.pinned_message: await safe_repo.pin()
                     await edit.delete()
-                    return # Cleanup will happen in `finally`
+                    return 
 
                 if not is_batch_mode:
                     pending_video_splits[sender] = {
@@ -204,12 +220,11 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                         f"💡 الفيديو أطول من دقيقتين (مدته: {format_duration(duration)}). اختر عدد الأجزاء للتقسيم:",
                         buttons=buttons
                     )
-                    # Don't clean up here; callback handler will do it
                     file_path = None
                     original_thumb_path = None
                     return 
 
-                else: # In batch mode
+                else:
                     await app.edit_message_text(sender, edit_id, "Video > 2 mins. Uploading as single file in batch mode.")
                     safe_repo = await app.send_video(
                         chat_id=sender, video=file_path, caption=caption, supports_streaming=True, height=height,
@@ -219,7 +234,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                     await edit.delete()
                     return
 
-            else: # Photo, Document, etc.
+            else:
                 delete_words = load_delete_words(sender)
                 custom_caption_suffix = get_user_caption_preference(sender)
                 processed_caption = caption
@@ -233,14 +248,14 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
 
                 target_chat_id = user_chat_ids.get(chatx, chatx)
                 if msg.media == MessageMediaType.PHOTO:
-                    await edit.edit("**`Uploading photo...`**")
+                    await edit.edit("📤 جارٍ رفع الصورة...")
                     safe_repo = await app.send_photo(chat_id=target_chat_id, photo=file_path, caption=processed_caption)
                 else:
                     thumb_path = thumbnail(chatx)
-                    await edit.edit("**`Uploading file...`**")
+                    await edit.edit("📤 جارٍ رفع الملف...")
                     safe_repo = await app.send_document(
                         chat_id=target_chat_id, document=file_path, caption=processed_caption,
-                        thumb=thumb_path, progress=progress_bar, progress_args=('📤 **جاري الرفع...**', edit, time.time())
+                        thumb=thumb_path, progress=progress_bar, progress_args=('📤 جارٍ الرفع', edit, time.time(), upload_filename)
                     )
 
                 if msg.pinned_message: await safe_repo.pin()
@@ -255,7 +270,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                 os.remove(file_path)
             if original_thumb_path and os.path.exists(original_thumb_path):
                 os.remove(original_thumb_path)
-    else: # Public link
+    else:
         edit = await app.edit_message_text(sender, edit_id, "Cloning from public channel...")
         try:
             chat = msg_link.split("/")[-2]
@@ -371,14 +386,14 @@ async def callback_query_handler(event):
         value = data.decode().split('_')[1]
         await event.delete()
 
-        split_data = pending_video_splits[user_id] # Keep it in dict until fully processed
+        split_data = pending_video_splits[user_id] 
 
         if value == 'more':
             prompt_msg = await event.respond("📝 Please reply to this message with the number of parts you want (must be > 10).")
             split_data['prompt_msg_id'] = prompt_msg.id
             return
 
-        split_data = pending_video_splits.pop(user_id) # Now pop it
+        split_data = pending_video_splits.pop(user_id) 
         file_path = split_data.get('file_path')
         original_thumb_path = split_data.get('thumb_path')
         temp_dir = tempfile.TemporaryDirectory()
