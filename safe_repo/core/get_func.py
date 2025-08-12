@@ -54,27 +54,27 @@ async def split_video_ffmpeg(input_file, num_parts, output_dir):
             "ffmpeg", "-y", "-i", input_file, "-ss", str(start_time),
             "-t", str(split_duration), "-c", "copy", output_file
         ]
-        # Use capture_output to hide ffmpeg logs unless there's an error
         subprocess.run(command, check=True, capture_output=True, text=True)
 
 
-async def upload_video_parts(app, sender, edit_id, output_dir, msg, caption, log_group, **kwargs):
-    """Uploads video parts from a directory as albums."""
+async def upload_video_parts(app, sender, edit_id, output_dir, msg, caption, log_group, total_parts, **kwargs): # Added total_parts
+    """Uploads video parts from a directory."""
     def get_part_number(filename):
         try:
-            # Extracts number from "part<number>.mp4"
             return int(re.search(r'part(\d+)', filename).group(1))
         except (AttributeError, ValueError):
-            return float('inf') # Put files that don't match at the end
+            return float('inf')
 
     part_files = sorted(
         [f for f in os.listdir(output_dir) if f.startswith("part") and f.endswith(".mp4")],
         key=get_part_number
     )
 
-    media_group = []
+    uploaded_count = 0
     files_to_remove = []
 
+    await app.edit_message_text(sender, edit_id, f"📤 جارٍ رفع الأجزاء: {uploaded_count}/{total_parts}")
+    
     for part_file in part_files:
         part_path = os.path.join(output_dir, part_file)
         try:
@@ -83,49 +83,67 @@ async def upload_video_parts(app, sender, edit_id, output_dir, msg, caption, log
             part_width = part_metadata['width']
             part_height = part_metadata['height']
 
-            part_thumb_path = await screenshot(part_path, 0, sender) # Take thumbnail from the beginning
+            part_thumb_path = await screenshot(part_path, 0, sender)
             unique_thumb_path = os.path.join(output_dir, f"thumb_{uuid.uuid4().hex}.jpg")
             os.rename(part_thumb_path, unique_thumb_path)
             
-            # Use the new duration format in the part caption
             part_caption = f"{caption if caption else ''}\n\n**{os.path.basename(part_file)} | المدة: {format_duration(part_duration)}**"
             
-            media = InputMediaVideo(
-                media=part_path, caption=part_caption, supports_streaming=True,
-                height=part_height, width=part_width, duration=part_duration, thumb=unique_thumb_path
+            # --- MODIFICATION START ---
+            uploaded_count += 1
+            progress_msg_text = f"📤 جارٍ رفع الجزء {uploaded_count}/{total_parts}"
+            
+            safe_repo = await app.send_video(
+                chat_id=sender, 
+                video=part_path, 
+                caption=part_caption, 
+                supports_streaming=True,
+                height=part_height, 
+                width=part_width, 
+                duration=part_duration, 
+                thumb=unique_thumb_path,
+                progress=progress_bar, # Use the progress_bar for each part
+                progress_args=(progress_msg_text, edit_id, time.time(), os.path.basename(part_path))
             )
-            media_group.append(media)
+            
+            # Since progress_bar updates the original edit_id message, we need to ensure it exists
+            # And then update it to reflect the current part count.
+            # No direct update to edit_id here, progress_bar handles it.
+            # After each part, we update the main progress message
+            await app.edit_message_text(sender, edit_id, f"📤 تم رفع {uploaded_count}/{total_parts} أجزاء. جارٍ معالجة التالي...")
+
+            if msg.pinned_message:
+                try:
+                    await safe_repo.pin(both_sides=True)
+                except Exception:
+                    await safe_repo.pin()
+            # Optional: Uncomment to copy to log group
+            # await safe_repo.copy(log_group) 
+            
+            # Add files to remove after successful upload of this part
             files_to_remove.append((part_path, unique_thumb_path))
+
+            # Small delay to avoid overwhelming Telegram
+            await asyncio.sleep(0.5)
+            # --- MODIFICATION END ---
+            
         except Exception as e:
             await app.edit_message_text(sender, edit_id, f"Error processing {part_file}: {e}")
+            # If an error occurs, still try to clean up the current part
+            files_to_remove.append((part_path, unique_thumb_path))
 
-    # Function to split the list into chunks of 10 for each album
-    def create_albums(lst, size=10):
-        for i in range(0, len(lst), size):
-            yield lst[i:i + size]
 
-    try:
-        if media_group:
-            for album in create_albums(media_group):
-                if not album: continue
-                safe_repos = await app.send_media_group(chat_id=sender, media=album)
-                for safe_repo in safe_repos:
-                    if msg.pinned_message:
-                        try:
-                            await safe_repo.pin(both_sides=True)
-                        except Exception:
-                            await safe_repo.pin()
-                    # await safe_repo.copy(log_group) # Optional: Uncomment to copy to log group
-        else:
-            await app.edit_message_text(sender, edit_id, "No video parts were created to upload.")
-    except Exception as e:
-        await app.edit_message_text(sender, edit_id, f"Error uploading album: {e}")
-    finally:
-        for part_path, thumb_path in files_to_remove:
-            if os.path.exists(part_path):
-                os.remove(part_path)
-            if os.path.exists(thumb_path):
-                os.remove(thumb_path)
+    if uploaded_count == len(part_files):
+        await app.edit_message_text(sender, edit_id, f"✅ تم رفع جميع الأجزاء بنجاح ({uploaded_count}/{total_parts}).")
+    else:
+        await app.edit_message_text(sender, edit_id, f"⚠️ تم رفع {uploaded_count} من {total_parts} أجزاء. حدثت أخطاء في الأجزاء المتبقية.")
+        
+    # Ensure cleanup of all processed files
+    for part_path, thumb_path in files_to_remove:
+        if os.path.exists(part_path):
+            os.remove(part_path)
+        if os.path.exists(thumb_path):
+            os.remove(thumb_path)
 
 
 async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=False):
@@ -155,8 +173,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
 
             edit = await app.edit_message_text(sender, edit_id, "📥 جارٍ التحضير للتحميل...")
             
-            # Get the filename from message
-            file_name = "file" # Default fallback
+            file_name = "file" 
             if getattr(msg, 'document', None):
                 file_name = msg.document.file_name
             elif getattr(msg, 'video', None):
@@ -205,7 +222,7 @@ async def get_msg(userbot, sender, edit_id, msg_link, i, message, is_batch_mode=
                 if not is_batch_mode:
                     pending_video_splits[sender] = {
                         'file_path': file_path, 'edit_id': edit_id, 'sender': sender, 'msg': msg, 'caption': caption,
-                        'log_group': LOG_GROUP, 'thumb_path': original_thumb_path
+                        'log_group': LOG_GROUP, 'thumb_path': original_thumb_path, 'total_duration': duration # Added for splitting logic
                     }
                     buttons = [
                         [Button.inline("4 أجزاء", b'split_4'), Button.inline("5 أجزاء", b'split_5')],
@@ -401,8 +418,8 @@ async def callback_query_handler(event):
             num_parts = int(value)
             await app.edit_message_text(user_id, split_data['edit_id'], f"Splitting video into {num_parts} parts...")
             await split_video_ffmpeg(file_path, num_parts, temp_dir.name)
-            await app.edit_message_text(user_id, split_data['edit_id'], "Uploading video parts...")
-            await upload_video_parts(app, output_dir=temp_dir.name, **split_data)
+            # Pass total_parts to upload_video_parts
+            await upload_video_parts(app, output_dir=temp_dir.name, total_parts=num_parts, **split_data) 
             await app.delete_messages(user_id, split_data['edit_id'])
         except Exception as e:
             await app.edit_message_text(user_id, split_data['edit_id'], f"Error: {e}")
@@ -448,7 +465,7 @@ async def handle_split_reply(event):
 
     try:
         num_parts = int(event.text)
-        if num_parts <= 10:
+        if num_parts <= 10: # This check is here, but the inline buttons handle <=10. Still good to have.
             await event.reply("The number must be greater than 10. Please try again.")
             return
     except ValueError:
@@ -463,8 +480,8 @@ async def handle_split_reply(event):
         await event.client.delete_messages(event.chat_id, [event.id, split_data['prompt_msg_id']])
         await app.edit_message_text(user_id, split_data['edit_id'], f"Splitting video into {num_parts} parts...")
         await split_video_ffmpeg(file_path, num_parts, temp_dir.name)
-        await app.edit_message_text(user_id, split_data['edit_id'], "Uploading video parts...")
-        await upload_video_parts(app, output_dir=temp_dir.name, **split_data)
+        # Pass total_parts to upload_video_parts
+        await upload_video_parts(app, output_dir=temp_dir.name, total_parts=num_parts, **split_data)
         await app.delete_messages(user_id, split_data['edit_id'])
     except Exception as e:
         await app.edit_message_text(user_id, split_data['edit_id'], f"An error occurred: {e}")
