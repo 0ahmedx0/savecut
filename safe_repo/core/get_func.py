@@ -448,8 +448,8 @@ async def handle_split_reply(event):
 
     try:
         num_parts = int(event.text)
-        if num_parts <= 10:
-            await event.reply("The number must be greater than 10. Please try again.")
+        if num_parts <= 2:
+            await event.reply("The number must be greater than 2. Please try again.")
             return
     except ValueError:
         await event.reply("Invalid input. Please reply with a number.")
